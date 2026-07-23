@@ -131,7 +131,7 @@ uv run pytest --cov=identity_service --cov-fail-under=85
 uv run ruff check src tests && uv run ruff format --check src tests
 uv run mypy src tests
 uv run bandit -c pyproject.toml -r src
-uv export --no-dev --format requirements.txt -o requirements-audit.txt
+uv export --no-dev --no-emit-project --format requirements.txt -o requirements-audit.txt
 uv run pip-audit -r requirements-audit.txt --disable-pip
 ```
 
