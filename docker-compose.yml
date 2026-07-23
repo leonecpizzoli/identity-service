@@ -1,0 +1,102 @@
+name: identity-service
+
+services:
+  mongo-identity:
+    image: mongo:8.0
+    command:
+      - bash
+      - -c
+      - >-
+        openssl rand -base64 756 > /tmp/replica.key &&
+        chmod 400 /tmp/replica.key &&
+        chown mongodb:mongodb /tmp/replica.key &&
+        exec docker-entrypoint.sh mongod --replSet rs-identity --keyFile /tmp/replica.key --bind_ip_all
+    environment:
+      MONGO_INITDB_ROOT_USERNAME: identity-root
+      MONGO_INITDB_ROOT_PASSWORD: identity-root-dev-password
+    volumes:
+      - mongo-identity-data:/data/db
+    networks:
+      - identity-net
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - >-
+          mongosh --quiet -u identity-root -p identity-root-dev-password --eval
+          'try { rs.status().ok } catch (e) { rs.initiate({_id: "rs-identity", members: [{_id: 0, host: "mongo-identity:27017"}]}).ok }'
+          | grep -q 1
+      interval: 5s
+      timeout: 15s
+      retries: 30
+      start_period: 30s
+
+  mongo-identity-init:
+    image: mongo:8.0
+    depends_on:
+      mongo-identity:
+        condition: service_healthy
+    restart: "no"
+    entrypoint:
+      - bash
+      - -c
+      - >-
+        mongosh --quiet --host mongo-identity -u identity-root -p identity-root-dev-password --eval
+        'const appDb = db.getSiblingDB("identity_db");
+        if (!appDb.getUser("identity-app")) {
+        appDb.createUser({user: "identity-app", pwd: "identity-app-dev-password",
+        roles: [{role: "readWrite", db: "identity_db"}]}); }'
+    networks:
+      - identity-net
+
+  jwt-keygen:
+    image: mongo:8.0
+    restart: "no"
+    entrypoint:
+      - bash
+      - -c
+      - >-
+        if [ ! -f /keys/jwt_private.pem ]; then
+        openssl genpkey -algorithm RSA -pkeyopt rsa_keygen_bits:2048 -out /keys/jwt_private.pem &&
+        openssl rsa -in /keys/jwt_private.pem -pubout -out /keys/jwt_public.pem &&
+        chmod 644 /keys/jwt_private.pem /keys/jwt_public.pem; fi
+    volumes:
+      - jwt-keys:/keys
+
+  identity-service:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: identity-service:local
+    environment:
+      IDENTITY_ENVIRONMENT: docker
+      IDENTITY_MONGO__URI: >-
+        mongodb://identity-app:identity-app-dev-password@mongo-identity:27017/identity_db?authSource=identity_db&replicaSet=rs-identity
+      IDENTITY_MONGO__DATABASE: identity_db
+      IDENTITY_JWT__PRIVATE_KEY_PATH: /keys/jwt_private.pem
+      IDENTITY_JWT__ISSUER: https://identity.vehicle-resale.local
+      IDENTITY_JWT__AUDIENCE: vehicle-resale-platform
+      IDENTITY_BOOTSTRAP__ADMIN_EMAIL: admin@vehicle-resale.local
+      IDENTITY_BOOTSTRAP__ADMIN_PASSWORD: ChangeMeAdmin123
+      IDENTITY_BOOTSTRAP__ADMIN_DOCUMENT: PLATFORMADMIN001
+      IDENTITY_BOOTSTRAP__ADMIN_PHONE: "+15550000001"
+      IDENTITY_CORS__ALLOWED_ORIGINS: '["http://localhost:3000"]'
+    volumes:
+      - jwt-keys:/keys:ro
+    depends_on:
+      mongo-identity:
+        condition: service_healthy
+      mongo-identity-init:
+        condition: service_completed_successfully
+      jwt-keygen:
+        condition: service_completed_successfully
+    ports:
+      - "8001:8000"
+    networks:
+      - identity-net
+
+networks:
+  identity-net: {}
+
+volumes:
+  mongo-identity-data: {}
+  jwt-keys: {}
