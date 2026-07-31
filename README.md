@@ -1,5 +1,11 @@
 # Serviço de Identidade
 
+> ## 🎥 Vídeo explicando a solução completa
+>
+> **https://youtu.be/j9PBpKO1dao**
+>
+> O vídeo cobre a solução inteira, os dois serviços (identidade e vendas): arquitetura, decisões, código rodando e o deploy.
+
 Esse é o serviço de identidade da plataforma de revenda de veículos. Ele cuida só de gente: cadastro de compradores, login, emissão dos tokens e as chaves para validar esses tokens. É um serviço totalmente apartado do resto da plataforma, exatamente como o enunciado pede, para que os dados de cliente fiquem separados dos dados transacionais de veículos e vendas.
 
 Quem faz a parte de veículos e vendas é o outro serviço (o de vendas), que roda em outro repositório, com outro banco, e nunca toca no banco daqui. A única coisa que os dois compartilham é a confiança no token: este serviço assina os JWTs com uma chave RSA privada e publica a chave pública num endpoint JWKS, e o serviço de vendas usa essa chave pública para validar.
