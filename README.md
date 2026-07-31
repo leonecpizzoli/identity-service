@@ -163,9 +163,10 @@ O arquivo `.github/workflows/ci.yml` roda em todo Pull Request e em todo push na
 
 - **quality**: `uv lock --check`, instalação com uv, Ruff (lint e format), MyPy strict no src e nos testes, Bandit, pip-audit e a suíte completa de pytest com cobertura mínima de 85% e upload do relatório.
 - **docker**: `docker compose config` e build da imagem.
-- **release** (só na `main`, depois que os outros jobs passam): constrói a imagem versionada pelo SHA do commit e publica o artefato com `docker save`. Se qualquer etapa falhar, nada é publicado.
 
 O fluxo já foi pensado para branch protection: é só exigir os checks `quality` e `docker` nos Pull Requests.
+
+Quem constrói a imagem versionada é o `cd`, e ele publica no registry em vez de anexar um tar ao run — por isso o `ci` não repete esse build.
 
 O arquivo `.github/workflows/cd.yml` entra depois que o `ci` passa na `main`: publica a imagem em `ghcr.io/<owner>/identity-service:<sha>`, sobe um cluster Kubernetes efêmero com kind, aplica os manifests de `k8s/` e só considera o deploy bem-sucedido se o `scripts/smoke-test.sh` passar. Os detalhes — topologia, segredos, ordem de inicialização e como reproduzir tudo localmente — estão em [`docs/cd.md`](docs/cd.md).
 

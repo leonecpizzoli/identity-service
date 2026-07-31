@@ -57,8 +57,7 @@ services:
       - >-
         if [ ! -f /keys/jwt_private.pem ]; then
         openssl genpkey -algorithm RSA -pkeyopt rsa_keygen_bits:2048 -out /keys/jwt_private.pem &&
-        openssl rsa -in /keys/jwt_private.pem -pubout -out /keys/jwt_public.pem &&
-        chmod 644 /keys/jwt_private.pem /keys/jwt_public.pem; fi
+        chmod 644 /keys/jwt_private.pem; fi
     volumes:
       - jwt-keys:/keys
 
