@@ -74,7 +74,7 @@ services:
       IDENTITY_MONGO__DATABASE: identity_db
       IDENTITY_JWT__PRIVATE_KEY_PATH: /keys/jwt_private.pem
       IDENTITY_JWT__ISSUER: https://identity.vehicle-resale.local
-      IDENTITY_JWT__AUDIENCE: vehicle-resale-platform
+      IDENTITY_JWT__AUDIENCE: vehicle-resale-backend
       IDENTITY_BOOTSTRAP__ADMIN_EMAIL: admin@vehicle-resale.local
       IDENTITY_BOOTSTRAP__ADMIN_PASSWORD: ChangeMeAdmin123
       IDENTITY_BOOTSTRAP__ADMIN_DOCUMENT: PLATFORMADMIN001
@@ -92,10 +92,19 @@ services:
     ports:
       - "8001:8000"
     networks:
+      # identity-net e privada: so o servico e o banco dele estao nela.
+      # platform-net e compartilhada e existe para que consumidores do token
+      # alcancem o JWKS. Nada da plataforma alcanca o mongo-identity por ela.
       - identity-net
+      - platform-net
 
 networks:
   identity-net: {}
+  platform-net:
+    # Criada por este compose, com nome fixo para que consumidores do token em
+    # outros repositorios possam entrar nela como `external`. O identity nao
+    # depende de ninguem: e ele quem publica a rede, nao quem a procura.
+    name: vehicle-resale-platform
 
 volumes:
   mongo-identity-data: {}

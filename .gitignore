@@ -11,3 +11,5 @@ requirements-audit.txt
 dist/
 *.egg-info/
 .env
+.cd/
+*.pem

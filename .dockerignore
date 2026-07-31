@@ -9,3 +9,7 @@ coverage.xml
 htmlcov
 .github
 tests
+k8s
+scripts
+docs
+.cd

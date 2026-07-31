@@ -104,6 +104,26 @@ curl -s http://localhost:8001/.well-known/jwks.json | jq
 
 O token que sai do login é o que o serviço de vendas espera no header `Authorization: Bearer`. A documentação interativa do OpenAPI fica em `http://localhost:8001/docs`.
 
+### Rodando junto com o serviço de vendas
+
+Os dois serviços vivem em repositórios separados e continuam separados quando rodam juntos: o que existe entre eles é uma rede Docker e um contrato de token, nada mais.
+
+Este compose cria a rede `vehicle-resale-platform` e publica o serviço nela. É por ali que um consumidor alcança `http://identity-service:8000/.well-known/jwks.json` para validar os tokens que eu emito. O `mongo-identity` fica fora dessa rede — só o serviço entra nela.
+
+A ordem importa, e ela é a própria direção da dependência:
+
+```bash
+# 1) primeiro aqui, que é quem publica a rede e o JWKS
+docker compose up -d --build
+
+# 2) depois, no repositório vehicle-sales-service
+docker compose up -d --build
+```
+
+Para derrubar, o caminho inverso: primeiro o serviço de vendas, depois este. Se derrubar este primeiro, o Docker avisa que não conseguiu remover a rede porque ainda tem contêiner ligado nela — é só ruído, nada quebra.
+
+Repare que eu não preciso saber nada sobre o serviço de vendas para isso funcionar. Não há `depends_on`, variável de ambiente ou manifesto aqui que cite o outro serviço.
+
 ### Rodando fora do Docker
 
 ```bash
@@ -146,6 +166,19 @@ O arquivo `.github/workflows/ci.yml` roda em todo Pull Request e em todo push na
 - **release** (só na `main`, depois que os outros jobs passam): constrói a imagem versionada pelo SHA do commit e publica o artefato com `docker save`. Se qualquer etapa falhar, nada é publicado.
 
 O fluxo já foi pensado para branch protection: é só exigir os checks `quality` e `docker` nos Pull Requests.
+
+O arquivo `.github/workflows/cd.yml` entra depois que o `ci` passa na `main`: publica a imagem em `ghcr.io/<owner>/identity-service:<sha>`, sobe um cluster Kubernetes efêmero com kind, aplica os manifests de `k8s/` e só considera o deploy bem-sucedido se o `scripts/smoke-test.sh` passar. Os detalhes — topologia, segredos, ordem de inicialização e como reproduzir tudo localmente — estão em [`docs/cd.md`](docs/cd.md).
+
+O CD implanta **apenas este serviço**. Ele não sobe nem conhece nenhum consumidor do token, e o smoke test cobre só a superfície pública dele, incluindo o contrato do JWKS. A integração de verdade é exercitada localmente, com os dois repositórios lado a lado.
+
+Para rodar o mesmo deploy na sua máquina:
+
+```bash
+docker build -t identity-service:local .
+IMAGE_IDENTITY=identity-service:local ./scripts/deploy-kind.sh
+./scripts/smoke-test.sh
+kind delete cluster --name identity-service
+```
 
 ## Estado da última verificação local
 
