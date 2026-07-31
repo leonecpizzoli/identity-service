@@ -1,0 +1,145 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: identity-service-config
+  namespace: vehicle-resale
+data:
+  IDENTITY_ENVIRONMENT: kubernetes
+  IDENTITY_MONGO__DATABASE: identity_db
+  IDENTITY_JWT__PRIVATE_KEY_PATH: /keys/jwt_private.pem
+  IDENTITY_JWT__ISSUER: https://identity.vehicle-resale.local
+  IDENTITY_JWT__AUDIENCE: vehicle-resale-backend
+  IDENTITY_BOOTSTRAP__ADMIN_EMAIL: admin@vehicle-resale.local
+  IDENTITY_BOOTSTRAP__ADMIN_DOCUMENT: PLATFORMADMIN001
+  IDENTITY_BOOTSTRAP__ADMIN_PHONE: "+15550000001"
+  IDENTITY_CORS__ALLOWED_ORIGINS: '["http://localhost:3000"]'
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: identity-service
+  namespace: vehicle-resale
+  labels:
+    app: identity-service
+spec:
+  # NodePort para o smoke test alcancar a API pelo host (kind mapeia 30001 -> 8001).
+  # O mesmo Service resolve como identity-service:8000 dentro do cluster, que e
+  # o endereco do JWKS usado pelo vehicle-sales-service.
+  type: NodePort
+  selector:
+    app: identity-service
+  ports:
+    - name: http
+      port: 8000
+      targetPort: 8000
+      nodePort: 30001
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: identity-service
+  namespace: vehicle-resale
+  labels:
+    app: identity-service
+spec:
+  replicas: 2
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxUnavailable: 0
+      maxSurge: 1
+  selector:
+    matchLabels:
+      app: identity-service
+  template:
+    metadata:
+      labels:
+        app: identity-service
+    spec:
+      initContainers:
+        # O lifespan da aplicacao cria indices e o admin de bootstrap no startup,
+        # entao o pod so pode subir depois que o banco aceita o usuario da aplicacao.
+        - name: wait-for-mongo
+          image: mongo:8.0
+          command:
+            - bash
+            - -c
+            - |
+              until mongosh --quiet "$MONGO_URI" --eval 'db.runCommand({ping: 1}).ok' | grep -q 1; do
+                echo "aguardando mongo-identity aceitar o usuario da aplicacao..."
+                sleep 3
+              done
+          env:
+            - name: MONGO_URI
+              valueFrom:
+                secretKeyRef:
+                  name: identity-service-secrets
+                  key: mongo-uri
+      containers:
+        - name: identity-service
+          image: ${IMAGE_IDENTITY}
+          # As imagens sao carregadas no cluster com `kind load docker-image`,
+          # nao ha registry acessivel de dentro do kind.
+          imagePullPolicy: IfNotPresent
+          envFrom:
+            - configMapRef:
+                name: identity-service-config
+          env:
+            - name: IDENTITY_MONGO__URI
+              valueFrom:
+                secretKeyRef:
+                  name: identity-service-secrets
+                  key: mongo-uri
+            - name: IDENTITY_BOOTSTRAP__ADMIN_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: identity-service-secrets
+                  key: bootstrap-admin-password
+          ports:
+            - name: http
+              containerPort: 8000
+          startupProbe:
+            httpGet:
+              path: /health/live
+              port: http
+            periodSeconds: 3
+            failureThreshold: 40
+          livenessProbe:
+            httpGet:
+              path: /health/live
+              port: http
+            periodSeconds: 10
+            failureThreshold: 3
+          readinessProbe:
+            httpGet:
+              path: /health/ready
+              port: http
+            periodSeconds: 5
+            failureThreshold: 3
+          resources:
+            requests:
+              cpu: 100m
+              memory: 192Mi
+            limits:
+              memory: 512Mi
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop:
+                - ALL
+          volumeMounts:
+            - name: jwt-signing-key
+              mountPath: /keys
+              readOnly: true
+            - name: tmp
+              mountPath: /tmp
+      volumes:
+        - name: tmp
+          emptyDir: {}
+        - name: jwt-signing-key
+          secret:
+            secretName: jwt-signing-key
+            items:
+              - key: jwt_private.pem
+                path: jwt_private.pem
