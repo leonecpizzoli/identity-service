@@ -1,0 +1,180 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: mongo-identity
+  namespace: vehicle-resale
+  labels:
+    app: mongo-identity
+spec:
+  # Headless: o nome precisa resolver para o IP do pod, e nao para um ClusterIP.
+  # O rs.initiate registra "mongo-identity:27017" como membro e o mongod so aceita
+  # a configuracao se esse nome mapear para um endereco dele proprio.
+  clusterIP: None
+  # O endereco entra no DNS antes do pod ficar pronto, senao o proprio rs.initiate
+  # da readiness nao teria como resolver o nome que esta registrando.
+  publishNotReadyAddresses: true
+  selector:
+    app: mongo-identity
+  ports:
+    - name: mongodb
+      port: 27017
+      targetPort: 27017
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: mongo-identity
+  namespace: vehicle-resale
+  labels:
+    app: mongo-identity
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: mongo-identity
+  template:
+    metadata:
+      labels:
+        app: mongo-identity
+    spec:
+      initContainers:
+        # O keyFile e obrigatorio para autenticacao interna quando o mongod roda
+        # como replica set. Gerado por pod porque o replica set tem um unico membro.
+        - name: generate-keyfile
+          image: mongo:8.0
+          command:
+            - bash
+            - -c
+            - |
+              openssl rand -base64 756 > /keyfile/replica.key
+              chmod 400 /keyfile/replica.key
+              chown 999:999 /keyfile/replica.key
+          volumeMounts:
+            - name: keyfile
+              mountPath: /keyfile
+      containers:
+        - name: mongod
+          image: mongo:8.0
+          args:
+            - --replSet
+            - rs-identity
+            - --keyFile
+            - /keyfile/replica.key
+            - --bind_ip_all
+          env:
+            - name: MONGO_INITDB_ROOT_USERNAME
+              valueFrom:
+                secretKeyRef:
+                  name: mongo-identity-credentials
+                  key: root-username
+            - name: MONGO_INITDB_ROOT_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: mongo-identity-credentials
+                  key: root-password
+          ports:
+            - name: mongodb
+              containerPort: 27017
+          # A readiness inicia o replica set no primeiro sucesso e, a partir dai,
+          # so reporta pronto quando rs.status() responde. Como o Service roteia
+          # apenas para pods prontos, quem depende do banco espera de graca.
+          readinessProbe:
+            exec:
+              command:
+                - bash
+                - -c
+                - >-
+                  mongosh --quiet -u "$MONGO_INITDB_ROOT_USERNAME" -p "$MONGO_INITDB_ROOT_PASSWORD" --eval
+                  'try { rs.status().ok } catch (e) { rs.initiate({_id: "rs-identity", members: [{_id: 0, host: "mongo-identity:27017"}]}).ok }'
+                  | grep -q 1
+            initialDelaySeconds: 15
+            periodSeconds: 5
+            timeoutSeconds: 15
+            failureThreshold: 30
+          resources:
+            requests:
+              cpu: 100m
+              memory: 256Mi
+            limits:
+              memory: 1Gi
+          volumeMounts:
+            - name: keyfile
+              mountPath: /keyfile
+              readOnly: true
+            - name: data
+              mountPath: /data/db
+      volumes:
+        - name: keyfile
+          emptyDir: {}
+        # Ambiente efemero: o estado morre junto com o cluster, por design.
+        - name: data
+          emptyDir: {}
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: mongo-identity-init
+  namespace: vehicle-resale
+spec:
+  backoffLimit: 6
+  template:
+    metadata:
+      labels:
+        app: mongo-identity-init
+    spec:
+      restartPolicy: OnFailure
+      containers:
+        - name: create-app-user
+          image: mongo:8.0
+          env:
+            - name: ROOT_USERNAME
+              valueFrom:
+                secretKeyRef:
+                  name: mongo-identity-credentials
+                  key: root-username
+            - name: ROOT_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: mongo-identity-credentials
+                  key: root-password
+            - name: APP_USERNAME
+              valueFrom:
+                secretKeyRef:
+                  name: mongo-identity-credentials
+                  key: app-username
+            - name: APP_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: mongo-identity-credentials
+                  key: app-password
+          command:
+            - bash
+            - -c
+            - |
+              set -euo pipefail
+              # Esperar por um ping nao basta: o mongod responde antes do replica set
+              # ser iniciado, e criar usuario e uma escrita, que exige um primario.
+              until mongosh --quiet --host mongo-identity -u "$ROOT_USERNAME" -p "$ROOT_PASSWORD" \
+                --eval 'db.hello().isWritablePrimary' | grep -q true; do
+                echo "aguardando mongo-identity virar primario..."
+                sleep 3
+              done
+              mongosh --quiet --host mongo-identity -u "$ROOT_USERNAME" -p "$ROOT_PASSWORD" --eval "
+                const appDb = db.getSiblingDB('identity_db');
+                if (!appDb.getUser('$APP_USERNAME')) {
+                  appDb.createUser({
+                    user: '$APP_USERNAME',
+                    pwd: '$APP_PASSWORD',
+                    roles: [{role: 'readWrite', db: 'identity_db'}],
+                  });
+                  print('usuario de aplicacao criado');
+                } else {
+                  print('usuario de aplicacao ja existe');
+                }
+              "
+          resources:
+            requests:
+              cpu: 50m
+              memory: 128Mi
